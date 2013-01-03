@@ -1,5 +1,5 @@
 /**
- * Arctic.js v0.1.2
+ * Arctic.js v0.1.11
  * Copyright (c) 2012 DeNA Co., Ltd. 
  */
 (function(global){
@@ -53,6 +53,23 @@
 		var returnX = x * Math.cos(theta) - y * Math.sin(theta);
 		var returnY = x * Math.sin(theta) + y * Math.cos(theta);
 		return [returnX, returnY];
+	}
+
+	function getRotatedRect(x, y, width, height, rotation){
+		if(arc.ua.isAndroid2_1){
+			return [x, y, width, height];
+		}
+		var pos0 = getRotatedPos(x, y, rotation),
+		    pos1 = getRotatedPos(x + width, y, rotation),
+		    pos2 = getRotatedPos(x, y + height, rotation),
+		    pos3 = getRotatedPos(x + width, y + height, rotation);
+
+		var minX = Math.min(pos0[0], pos1[0], pos2[0], pos3[0]),
+		    minY = Math.min(pos0[1], pos1[1], pos2[1], pos3[1]),
+		    maxX = Math.max(pos0[0], pos1[0], pos2[0], pos3[0]),
+		    maxY = Math.max(pos0[1], pos1[1], pos2[1], pos3[1]);
+			
+		return [minX, minY, maxX - minX, maxY - minY];	
 	}
 	
 	function getColorStyle(color){
@@ -228,6 +245,7 @@
 	/** @lends arc.Event.prototype */
 	{
 		type:null, target:null,
+        _willPropagate: true,
 		/**
 		 * @class イベント発生時にリスナーに渡されるイベントオブジェクトを生成する基本クラス
 		 * @constructs
@@ -245,7 +263,17 @@
 					this[prop] = params[prop];
 				}
 			}
-		}
+		},
+        /**
+         * イベントの伝播を止める
+         */
+        stopPropagation: function(){
+            this._willPropagate = false;
+        },
+
+        willPropagate: function(){
+            return this._willPropagate;
+        }
 	});
 	/**
 	 * @name PROGRESS
@@ -352,7 +380,16 @@
 		 * イベントをイベントフローに送出
 		 * @param {arc.Event} イベントオブジェクト
 		 */ 
-		dispatchEvent:function(type, params){
+		dispatchEvent:function(){
+			var type, params, e;
+			if(arguments[0].constructor === String){
+				type = arguments[0];
+				params = arguments[1];
+			}else{
+				e = arguments[0];
+				type = e.type;
+			}
+                
 			if(!EventDispatcher.listenHash[type]) return;
 			
 			var arr = [];
@@ -364,7 +401,9 @@
 			for(var i = 0; i < len; i++){
 				var obj = arr[i];
 				if(obj.target == this){
-					var e = new Event(type, params);
+					if(!e){
+						e = new Event(type, params);
+					}
 					e.target = this;
 					obj.callback.call(this, e);
 				}
@@ -377,7 +416,7 @@
 	var Timer = Class.create(
 	/** @lends arc.Timer.prototype */
 	{
-		_startTime:0, _isCounting:false,
+		_startTime:0, _isCounting:false, _elapsedTime:0,
 		/**
 		 * @class ランループを制御するタイマークラス。クラスメソッドtickを実行する事で時間を進め、生成されたインスタンスはその時間を元に動作する。
 		 * @description タイマーインスタンスを生成
@@ -410,8 +449,10 @@
 		 * startしてからの経過時間を取得。
 		 */ 
 		getElapsed:function(){
-			if(!this._isCounting && !this._startTime) return 0;
-			return Timer.time - this._startTime;
+			if(this._isCounting){
+				this._elapsedTime = Timer.time - this._startTime;
+			}
+			return this._elapsedTime;
 		}
 	});
 	Timer.time = 0;
@@ -467,7 +508,7 @@
 				this._currentCount++;
 				this._timer.reset();
 				this.dispatchEvent(Event.TIMER);
-				if(this._currentCount >= this._repeatCount){
+				if(this._repeatCount && this._currentCount >= this._repeatCount){
 					this.reset();
 					this.dispatchEvent(Event.TIMER_COMPLETE);
 				}
@@ -617,7 +658,7 @@
 		 * @constructs
 		 * @augments arc.EventDispatcher
 		 * @description Imageオブジェクトを生成
-		 * @param {HTMLImageElement} param HTMLImageElementまたは画像パス
+		 * @param {HTMLImageElement} data HTMLImageElementまたは画像パス
 		 * @param {Number} localPosArr 利用するローカル座標とサイズを配列で指定します。(オプション）
 		 *
 		 */ 
@@ -895,7 +936,7 @@
 	/** @lends arc.display.DisplayObject.prototype */
 	{
 		_data:null, _parent:null,
-		_x:0, _y:0, _width:null, _height:null, _visible:true, _scaleX:1, _scaleY:1, _alpha:1, _rotation:0, _alignX:0, _alignY:0,
+		_x:0, _y:0, _width:null, _height:null, _visible:true, _scaleX:1, _scaleY:1, _alpha:1, _rotation:0, _alignX:0, _alignY:0, _screenRect:[],
 		/**
 		 * @class 表示オブジェクトの基本クラス
 		 * @constructs
@@ -908,6 +949,7 @@
 			this._data = data;
 			this._width = this._data.getWidth();
 			this._height = this._data.getHeight();
+			this._screenRect = [0, 0, this._width, this._height];
 		},
 		/**
 		 * ローカルの座標系からグローバルの座標系に変換
@@ -974,6 +1016,7 @@
 		 */ 
 		setX:function(value){
 			this._x = value;
+			this._updateScreenRect();
 		},
 		/**
 		 * x座標を取得
@@ -988,6 +1031,7 @@
 		 */ 
 		setY:function(value){
 			this._y = value;
+			this._updateScreenRect();
 		},
 		/**
 		 * y座標を取得
@@ -1006,6 +1050,7 @@
 			if(this._data){
 				this._scaleX = this._width / this._data.getWidth();
 			}
+			this._updateScreenRect();
 		},
 		/**
 		 * 幅を取得
@@ -1024,6 +1069,7 @@
 			if(this._data){
 				this._scaleY = this._height / this._data.getHeight();
 			}
+			this._updateScreenRect();
 		},
 		/**
 		 * 高さを取得
@@ -1041,6 +1087,7 @@
 			//if(value > 1) trace("exceed scale 1 :" + value);
 			this._scaleX = value;
 			this._width = this._data.getWidth() * this._scaleX;
+			this._updateScreenRect();
 		},
 		/**
 		 * 横の拡大率を取得
@@ -1058,6 +1105,7 @@
 			if(!value) value = 0;
 			this._scaleY = value;
 			this._height = this._data.getHeight() * this._scaleY;
+			this._updateScreenRect();
 		},
 		/**
 		 * 縦の拡大率を取得
@@ -1130,6 +1178,22 @@
 		 */ 
 		getAlignY:function(){
 			return this._alignY;
+		},
+		/**
+		 * stageオブジェクトを取得
+		 * @retuns {Stage} Stageオブジェクト
+		 */
+		getStage: function(){
+			return display.Stage.instance;
+		},
+
+		_updateScreenRect:function(){
+			var tX = this._x + this._alignX * this._scaleX,
+			    tY = this._y + this._alignY * this._scaleY,
+			    tWidth = this._width,
+			    tHeight = this._height;
+			
+			this._screenRect = getRotatedRect(tX, tY, tWidth, tHeight, this._rotation);
 		}
 	});
 	
@@ -1148,6 +1212,7 @@
 		initialize:function($super){
 			$super(null);
 			this._displayArr = [];
+			this._minX = this._maxX = this._minY = this._maxY = 0;
 		},
 		/**
 		 * 表示リストにDisplayObjectオブジェクトを追加
@@ -1216,6 +1281,22 @@
 			}
 			return false;
 		}, 
+	
+        /**
+         * 子DisplayObjectの深度を変更する
+         * @param {DisplayObject} child 変更したい子DisplayObject
+         * @param {Number} index 変更後の深度
+         */
+        setChildIndex:function(child, index){
+            for(var i = 0, len = this._displayArr.length; i < len; i++){
+                var disp = this._displayArr[i];
+                if(disp == child){
+                    this._displayArr.splice(i, 1);
+                    this._displayArr.splice(index, 0, child);
+                }
+            }
+        },
+
 		draw:function(pX, pY, pScaleX, pScaleY, pAlpha, pRotation){
 			if(!this.getVisible()) return;
 	
@@ -1276,23 +1357,37 @@
 			var len = this._displayArr.length;
 			for(var i = 0; i < len; i++){
 				var disp = this._displayArr[i];
-	
+
+				var tminX = disp._screenRect[0],
+				    tminY = disp._screenRect[1],
+				    tmaxX = disp._screenRect[0] + disp._screenRect[2],
+				    tmaxY = disp._screenRect[1] + disp._screenRect[3];
+
 				if(i == 0){
-					minX = disp.getX();
-					minY = disp.getY();
-					maxX = disp.getX() + disp.getWidth();
-					maxY = disp.getY() + disp.getHeight();
+					minX = tminX;
+					minY = tminY;
+					maxX = tmaxX;
+					maxY = tmaxY;
 				}
-				if(disp.getX() < minX) minX = disp.getX();
-				if(disp.getX() + disp.getWidth() > maxX) maxX = disp.getX() + disp.getWidth();
-				if(disp.getY() < minY) minY = disp.getY();
-				if(disp.getY() + disp.getHeight() > maxY) maxY = disp.getY() + disp.getHeight();
+				if(tminX < minX) minX = tminX;
+				if(tmaxX > maxX) maxX = tmaxX;
+				if(tminY < minY) minY = tminY;
+				if(tmaxY > maxY) maxY = tmaxY;
+				
 			}
 	
-			this._originWidth = maxX - minY;
+			this._originWidth = maxX - minX;
 			this._originHeight = maxY - minY;
 			this._width = this._originWidth * this._scaleX;
 			this._height = this._originHeight * this._scaleY;
+
+			this._screenRect = getRotatedRect(
+				minX * this._scaleX + this._x,
+				minY * this._scaleY + this._y,
+				this._width,
+				this._height,
+				this._rotation
+			);
 		},
 		
 		setWidth:function(value){
@@ -1328,6 +1423,10 @@
 		 */
 		clearMask:function(){
 			this._maskObj = null;
+		},
+
+		_updateScreenRect:function(){
+			this._updateSize();
 		}
 	});
 	
@@ -1485,14 +1584,7 @@
 				if(self._willBeStroked) ctx.stroke();
 			});
 		},
-		/**
-		 * 矩形を描画
-		 * @param {Number} x 矩形のx座標
-		 * @param {Number} y 矩形のy座標
-		 * @param {Number} width 矩形の横幅
-		 * @param {Number} height 矩形の高さ
-		 */ 
-		drawRect:function(x, y, width, height){
+		_updateSize: function(x, y, width, height){
 			if(this._firstFlg){
 				this._firstFlg = false;
 				this._minX = x;
@@ -1505,9 +1597,24 @@
 			if(y < this._minY) this._minY = y;
 			if(y + height > this._maxY) this._maxY = y + height;
 	
-			this._width = this._maxX - this._minX;
-			this._height = this._maxY - this._minY;
-			
+			this._originWidth = this._maxX - this._minX;
+			this._originHeight = this._maxY - this._minY;
+
+			this._width = this._originWidth * this._scaleX;
+			this._height = this._originHeight * this._scaleY;
+
+			this._updateScreenRect();
+		},
+		/**
+		 * 矩形を描画
+		 * @param {Number} x 矩形のx座標
+		 * @param {Number} y 矩形のy座標
+		 * @param {Number} width 矩形の横幅
+		 * @param {Number} height 矩形の高さ
+		 */ 
+		drawRect:function(x, y, width, height){
+			this._updateSize(x, y, width, height);
+
 			var self = this;
 			this._funcStack.push(function(pX, pY, pScaleX, pScaleY, pAlpha){
 				var ctx = display.Image.context;
@@ -1524,21 +1631,8 @@
 		 * @param {Number} radius 円の半径
 		 */
 		drawCircle:function(x, y, radius){
-			if(this._firstFlg){
-				this._firstFlg = false;
-				this._minX = x - radius / 2;
-				this._maxX = x + radius / 2;
-				this._minY = y - radius / 2;
-				this._maxY = y + radius / 2;
-			}
-			if(x - radius / 2 < this._minX) this._minX = x - radius / 2;
-			if(x + radius / 2 > this._maxX) this._maxX = x + radius / 2;
-			if(y - radius / 2 < this._minY) this._minY = y - radius / 2;
-			if(y + radius / 2 > this._maxY) this._maxY = y + radius / 2;
-	
-			this._width = this._maxX - this._minX;
-			this._height = this._maxY - this._minY;
-	
+			this._updateSize(x - radius, y - radius, radius * 2, radius * 2);
+
 			var self = this;
 			this._funcStack.push(function(pX, pY, pScaleX, pScaleY, pAlpha){
 				var ctx = display.Image.context;
@@ -1556,8 +1650,8 @@
 			pAlpha = (!isNaN(pAlpha)) ? pAlpha : 1;
 			pRotation = (pRotation) ? pRotation : 0;
 	
-			var tX = pX + this._x * pScaleX;
-			var tY = pY + this._y * pScaleY;
+			var tX = pX;
+			var tY = pY;
 			var tScaleX = pScaleX * this._scaleX;
 			var tScaleY = pScaleY * this._scaleY;
 			var tAlpha = pAlpha * this._alpha;
@@ -1575,22 +1669,42 @@
 			ctx.restore();
 		},
 		setWidth:function(value){
-			this._scaleX = value / this._width;
+			//this._scaleX = value / this._width;
+			this._width = value;
+			this._scaleX = this._width / this._originWidth;
+			this._updateScreenRect();
 		},
 		getWidth:function(){
 			return this._width * this._scaleX;
 		},
 		setHeight:function(value){
-			this._scaleY = value / this._height;
+			//this._scaleY = value / this._height;
+			this._height = value;
+			this._scaleY = this._height / this._originHeight;
+			this._updateScreenRect();
 		},
 		getHeight:function(){
 			return this._height * this._scaleY;
 		},
 		setScaleX:function(value){
+			//this._scaleX = value;
 			this._scaleX = value;
+			this._width = this._originWidth * this._scaleX;
+			this._updateScreenRect();
 		},
 		setScaleY:function(value){
+			//this._scaleY = value;
 			this._scaleY = value;
+			this._height = this._originHeight * this._scaleY;
+			this._updateScreenRect();
+		},
+		_updateScreenRect:function(){
+			var tX = this._x + this._minX * this._scaleX,
+			    tY = this._y + this._minY * this._scaleY,
+			    tWidth = this._width,
+			    tHeight = this._height;
+			
+			this._screenRect = getRotatedRect(tX, tY, tWidth, tHeight, this._rotation);
 		}
 	});
 	
@@ -2158,6 +2272,44 @@
 			this.stop();
 		}
 	});
+
+
+	display.Stage = Class.create(display.DisplayObjectContainer,
+    /** @lends arc.display.Stage.prototype */	
+	{
+        /**
+		 * @class 表示ツリーのルートとなる表示オブジェクト
+		 * @constructs
+		 * @augments arc.display.DisplayObjectContainer
+         * @param {Number} width 画面の横幅
+         * @param {Number} height 画面の縦幅
+		 * @description 
+		 */
+		initialize: function(width, height){
+			if(display.Stage.instance){
+				return display.Stage.instance;
+			}
+
+			display.Stage.instance = this;
+			this._stageWidth = width;
+			this._stageHeight = height;
+		},
+        /**
+         * 画面の横幅を取得
+         * @returns {Number} 画面の横幅
+         */
+		getStageWidth: function(){
+			return this._stageWidth;
+		},
+        /**
+         * 画面の縦幅を取得
+         * @returns {Number} 画面の縦幅
+         */
+		getStageHeight: function(){
+			return this._stageHeight;
+		}
+	});
+	display.Stage.instance = null;
 	
 	
 	display.TextField = Class.create(display.DisplayObject,
@@ -2929,8 +3081,8 @@
 			this._loadedImgNum = 0;
 			this._loadImgNum = srcArr.length;
 			this._loadingImgArr = [];
-	
-			if(len === 0){
+            
+			if(!srcArr || srcArr.length === 0){
 				this.dispatchEvent(Event.COMPLETE);
 				return;
 			}
@@ -3037,7 +3189,7 @@
 			getLoaded	: getLoaded
 		};
 	})());
-	
+
 	
 	var System = Class.create(EventDispatcher, 
 	/** @lends arc.System.prototype */
@@ -3047,6 +3199,7 @@
 		_stage:null, _imageManager:null,
 		_realFps:0, _runTime:0, _runCount:0, _prevTime:0, _fpsElem:null,
 		_maxFps:0, _adjustCount:1, _timer:null,
+        _canvasScale: 1,
 	
 		_ADJUST_FPS_TIME:10000, _ADJUST_FACTOR:2.5,
 		
@@ -3064,7 +3217,7 @@
 			this._height = height;
 			this._canvas = document.getElementById(canvasId);
 			this._context = this._canvas.getContext('2d');
-			this._stage = new display.DisplayObjectContainer();
+			this._stage = new display.Stage(width, height);
 			this._timer = new Timer();
 			this._disableClearRect = (disableClearRect) ? true : false;
 	
@@ -3079,13 +3232,23 @@
 			this._fpsElem = document.getElementById('fps');
 
 			this._setEvent();
+			this._setScroll();
 		},
 		/**
-		 * フルスクリーンモードをonにする。canvasの幅がデバイスの横幅になる。デバイスを回転させた場合も同様。
+		 * 指定したフルスクリーンモードにする。デバイスを回転させた時にも適用される。
+		 * @param {String} mode フルスクリーンモード
+		 * @param {Boolean} shouldShrink 縮小を許可するか
+		 * @example
+		 * system.setFullScreen("width");		//アスペクト比は保ったまま、コンテンツの横幅を画面の横幅に合わせる
+		 * system.setFullScreen("height");		//アスペクト比は保ったまま、コンテンツの縦幅を画面の縦幅に合わせる
+		 * system.setFullScreen("all", true);	//アスペクト比は保ったまま、コンテンツを必ず画面内におさめる
 		 */ 
-		setFullScreen:function(){
+		setFullScreen:function(mode, shouldShrink){
+			this._fullScreenMode = (mode) ? mode : 'width';
+			this._shouldShrink = shouldShrink;
+
 			this._setViewport();
-			
+
 			if(ua.isiOS){
 				window.addEventListener('orientationchange', bind(this._setViewport, this), true);
 			}else{
@@ -3094,41 +3257,69 @@
 
 		},
 		_setViewport:function(e){
-			var scale, width;
-			width = window.innerWidth;
-
-			if(width < this._canvas.width){
+			var width = window.innerWidth,
+			    height = window.innerHeight;
+				
+			if(!this._shouldShrink && width < this._canvas.width){
 				width = this._canvas.width;
 			}
 
-			scale = width / this._canvas.width;
+			if(!this._shouldShrink && height < this._canvas.height){
+				height = this._canvas.height;
+			}
 
-			this._canvas.style.width = width + 'px';
-			this._canvas.style.height = Math.floor(this._canvas.height * scale) + 'px';
+			var widthScale = width / this._canvas.width,
+				heightScale = height / this._canvas.height;
+
+			switch(this._fullScreenMode){
+				case 'width':
+					this._canvasScale = widthScale;
+					break;
+
+				case 'height':
+					this._canvasScale = heightScale;
+					break;
+
+				case 'all':
+					this._canvasScale = (widthScale < heightScale) ? widthScale : heightScale;
+					break;
+
+			}
+
+			this._canvas.style.width = Math.floor(this._canvas.width * this._canvasScale) + 'px';
+			this._canvas.style.height = Math.floor(this._canvas.height * this._canvasScale) + 'px';
 		},
 		_setEvent:function(){
 			var self = this, touchObj = {};
 
 			function getPos(obj){
-				return {x:obj.pageX - self._canvas.offsetLeft, y:obj.pageY - self._canvas.offsetTop};
+				return {x:obj.pageX / self._canvasScale - self._canvas.offsetLeft, y:obj.pageY / self._canvasScale - self._canvas.offsetTop};
 			}
-			function dispatchTarget(targ, type, object){
+			function dispatchTarget(targ, e){
+				if(!e.willPropagate()){
+					return;
+				}
 				var tparent = targ.getParent();
-				targ.dispatchEvent(type, object);
+				targ.dispatchEvent(e);
 				if(tparent){
-					dispatchTarget(tparent, type, object);
+					dispatchTarget(tparent, e);
 				}
 			}
 			function findTarget(cont, x, y){
-				var list = cont._displayArr, disp, posX, posY;
+				var list = cont._displayArr, disp, pos;
 				for(var i = list.length - 1; i >= 0; i--){
 					disp = list[i];
-					posX = disp.getX();
-					posY = disp.getY();
+                    if(!disp.getVisible()){
+                        continue;
+                    }
+					pos = cont.localToGlobal(disp._screenRect[0], disp._screenRect[1]);
 					
-					if(posX <= x && posX + disp.getWidth() >= x && posY <= y && posY + disp.getHeight() >= y){
+					if(pos[0] <= x && pos[0] + disp._screenRect[2] >= x && pos[1] <= y && pos[1] + disp._screenRect[3] >= y){
 						if(disp._displayArr){
-							return findTarget(disp, x, y);
+                            var target = findTarget(disp, x, y);
+                            if(target){
+                                return target;
+                            }
 						}else{
 							return disp;
 						}
@@ -3144,10 +3335,14 @@
 					var pos = getPos(obj),
 					    target = findTarget(self._stage, pos.x, pos.y);
 
-					touchObj[id] = target;
-					if(target){
-						dispatchTarget(target, Event.TOUCH_START, {x:pos.x, y:pos.y});
+					if(!target){
+						target = self._stage;
 					}
+
+					touchObj[id] = target;
+
+					var event = new Event(Event.TOUCH_START, {x:pos.x, y:pos.y});
+					dispatchTarget(target, event);
 				}
 
 				if(e.type == 'mousedown'){
@@ -3171,7 +3366,8 @@
 					    pos = getPos(obj);
 					
 					if(target){
-						dispatchTarget(target, Event.TOUCH_MOVE, {x:pos.x, y:pos.y});	
+						var event = new Event(Event.TOUCH_MOVE, {x:pos.x, y:pos.y});
+						dispatchTarget(target, event);	
 					}
 				}
 
@@ -3195,7 +3391,8 @@
 					delete touchObj[id];
 
 					if(target){
-						dispatchTarget(target, Event.TOUCH_END, {x:pos.x, y:pos.y});	
+						var event = new Event(Event.TOUCH_END, {x:pos.x, y:pos.y});
+						dispatchTarget(target, event);
 					}
 				}
 				if(e.type == 'mouseup'){
@@ -3218,11 +3415,27 @@
 				this._canvas.addEventListener('mousedown', touchStart, true);
 			}
 		},
+		_setScroll:function(){
+			function doScroll(){
+				if (window.pageYOffset <= 1) {						
+					setTimeout(bind(function () {
+						scrollTo(0, 1);
+						setTimeout(bind(this._setViewport, this), 1000);
+					}, this), 10);
+				}
+			}
+			if(didLoad){
+				window.addEventListener("load", bind(doScroll, this), false);
+			}else{
+				doScroll.call(this);
+			}
+		},
 		/**
 		 * 画像のロードを行う
 		 * @param {Array} resourceArr ImageManagerに渡すリソース配列
 		 */ 
 		load:function(resourceArr){
+			this._isStartedWithLoad = true;
 			if(!this._imageManager){
 				this._imageManager = new ImageManager();
 			}
@@ -3237,7 +3450,7 @@
 			this._imageManager.removeEventListener(Event.PROGRESS);
 			this._imageManager.removeEventListener(Event.COMPLETE);
 			this.dispatchEvent(Event.COMPLETE);
-			this.start();	
+			this._startGame();	
 		},
 		/**
 		 * Gameのメインクラスを指定
@@ -3252,10 +3465,17 @@
 		 * Gameをスタートさせる
 		 */
 		start:function(){
+			if(this._game || this._isStartedWithLoad){
+				throw new Error('do not call System.start or System.load again');
+			}
+			this._startGame();
+		},
+
+		_startGame: function(){
+			Timer.tick();
 			this._game = new this._gameClass(this._gameParams, this);
 			this._stage.addChild(this._game);
 	
-			Timer.tick();
 			this._prevTime = Timer.time;
 	
 			this._timer.start();
@@ -3339,7 +3559,6 @@
 	
 	
 	
-	
 	//abstract classes
 	var Game = Class.create(display.DisplayObjectContainer, {
 		_system:null,
@@ -3350,14 +3569,17 @@
 			
 		}
 	});
-	
-	
+
+	var didLoad = false;
 	window.addEventListener("load", function () {
+		didLoad = true;
+		/*
 		if (window.pageYOffset <= 1) {						
 			setTimeout (function () {
 				scrollTo(0, 1);
 			}, 10);
 		}
+		*/
 	}, false);
 
 	

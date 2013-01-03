@@ -1,0 +1,14 @@
+extends layout
+
+block extra_header
+  script(src="/js/coffee-script.js")
+  script(src="/js/mahieu.coffee", type="text/coffeescript")
+
+block content
+  div#loading
+    div.cont
+  canvas#canvas
+
+  div#fps(style="color:#ffffff;")
+  div#time(style="color:#ff0000;")
+

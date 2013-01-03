@@ -10,8 +10,8 @@ class GameMain extends arc.Game
 
   update: ->
 
-window.addEventListener 'DOMContentLoaded', (e)->
-  system = new arc.System 320, 320, 'canvas', false, true
+startGame = ->
+  system = new arc.System 320, 320, 'canvas', false
   system.setGameClass GameMain,
     hp:100
     mp:100
@@ -24,4 +24,4 @@ window.addEventListener 'DOMContentLoaded', (e)->
 
   system.load ['sample.png']
 
-, false
+startGame()
